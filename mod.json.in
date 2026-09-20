@@ -1,7 +1,7 @@
 {
-  "id": "com.example.my_mod",
-  "name": "My Mod",
-  "version": "@PROJECT_VERSION@",
-  "author": "You",
-  "description": "An example Dusklight mod"
+  "id": "com.owen_splat.tri_rod",
+  "name": "Tri Rod",
+  "version": "1.0.0",
+  "author": "Owen-Splat",
+  "description": "Adds the Tri Rod from Echoes of Wisdom as a new item."
 }

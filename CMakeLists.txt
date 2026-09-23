@@ -19,7 +19,7 @@ configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_
 
 add_mod(tri-rod
         FEATURES game          # remove for service/asset-only mods; add webgpu for GfxService
-        SOURCES src/mod.cpp
+        SOURCES src/mod.cpp src/mod_data.hpp src/echo_menu.cpp src/echo_menu.hpp
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
         RES_DIR res            # mod resources, including icon.png and banner.png
         OVERLAY_DIR overlay    # game file overlays; remove if unused

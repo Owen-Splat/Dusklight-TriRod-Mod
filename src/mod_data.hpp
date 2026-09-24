@@ -1,11 +1,14 @@
 #pragma once
+#include <algorithm>
+#include <vector>
+#include <string>
 #include <types.h>
 #include "f_pc/f_pc_name.h"
 
 struct EchoObject {
 	s16 profileName;
 	std::string visibleName;
-	uint32_t paramaters;
+	uint32_t parameters;
 	int8_t argument;
 };
 

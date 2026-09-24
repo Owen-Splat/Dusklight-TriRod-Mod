@@ -139,7 +139,7 @@ bool SpawnActor() {
 
             // Now spawn the new one
             ActorSpawnParams spawnParams = {
-                .parameters = echo->paramaters,
+                .parameters = echo->parameters,
                 .argument = echo->argument,
                 .room_num = fopAcM_GetRoomNo(link),
                 .position = { lineChk.GetCross().x, lineChk.GetCross().y, lineChk.GetCross().z },
@@ -179,7 +179,7 @@ void OnRodHit(fopAc_ac_c* hitActor) {
         controlActor = hitActor->id;
         controlActorName = hitActor->profile->name;
         controlDistance = hitActor->current.pos - link->current.pos;
-        hitActor->tevStr.TevKColor.g = 45; // Not all objects use this
+        hitActor->tevStr.TevKColor.g = 25; // Not all objects use this
     }
 }
 
@@ -196,6 +196,9 @@ HookAction on_copy_actor_pre(ModContext* ctx, void* args, void*, void*) {
                 if (hitActor) {
                     if (copiedActorName == -1 && controlActor == 0) {
                         OnRodHit(hitActor);
+                        if (copiedActorName != -1 || controlActor != 0) {
+                            copyRod->setReturn();
+                        }
                     }
                 }
             }
@@ -216,14 +219,11 @@ HookAction on_rod_pre(ModContext* ctx, void* args, void*, void*) {
 
     fopAc_ac_c* cActor = fopAcM_SearchByID(controlActor);
     if (cActor && cActor->profile->name == controlActorName) {
-        float currentFrame = link->mUnderFrameCtrl[0].getFrame();
-        if (currentFrame >= 5.0f) {
-            PlaySoundEffect(Z2SoundID::Z2SE_CSTATUE_S_STOP);
-            cActor->tevStr.TevKColor.g = 0;
-            controlActor = 0;
-            link->procCopyRodSwingInit();
-            return HOOK_SKIP_ORIGINAL;
-        }
+        PlaySoundEffect(Z2SoundID::Z2SE_CSTATUE_S_STOP);
+        cActor->tevStr.TevKColor.g = 0;
+        controlActor = 0;
+        link->procCopyRodSwingInit();
+        return HOOK_SKIP_ORIGINAL;
     }
     return HOOK_CONTINUE;
 }
@@ -257,7 +257,7 @@ HookAction on_sight_pre(ModContext* ctx, void* args, void*, void*) {
 
 // Hook into the func that checks if you can use the rod
 // Force it to always true while this mod is active
-void check_rod_use_replace(ModContext*, void* args, void* retval, void*) {
+void check_rod_use_post(ModContext*, void* args, void* retval, void*) {
     *static_cast<bool*>(retval) = true;
 }
 
@@ -267,7 +267,7 @@ extern "C" {
         mods::hook::add_pre<RodAction>(on_rod_pre);
         mods::hook::add_pre<SpawnEchoes>(on_swing_pre);
         mods::hook::add_pre<RemoveEchoes>(on_sight_pre);
-        mods::hook::replace<AllowUseRod>(check_rod_use_replace);
+        mods::hook::add_post<AllowUseRod>(check_rod_use_post);
 
         // Add a chest containing the rod
         // It is placed outside of Link's house
@@ -297,15 +297,13 @@ extern "C" {
                 cActor->current.pos.z = link->current.pos.z + controlDistance.z;
 
                 // Ground check for Y pos
-                cXyz startPos(cActor->current.pos.x, cActor->current.pos.y + 100.0f, cActor->current.pos.z);
-                cXyz endPos(cActor->current.pos.x, cActor->current.pos.y - 100.0f, cActor->current.pos.z);
+                cXyz startPos(cActor->current.pos.x, cActor->current.pos.y + 300.0f, cActor->current.pos.z);
+                cXyz endPos(cActor->current.pos.x, cActor->current.pos.y - 300.0f, cActor->current.pos.z);
                 dBgS_ObjLinChk lineChk;
                 lineChk.Set(&startPos, &endPos, cActor);
                 if (dComIfG_Bgsp().LineCross(&lineChk)) {
                     cActor->current.pos.y = lineChk.GetCross().y;
                 }
-
-                // Also force the controlled actor to be focused at some point before release
             }
 
             // Clear echoes when the revive animation has fully played out

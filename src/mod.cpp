@@ -1,24 +1,27 @@
-#include <algorithm>
-#include <format>
-
 #include "mods/service.hpp"
-#include "mods/svc/hook.hpp"
 #include "mods/svc/actor.h"
+#include "mods/svc/hook.hpp"
 #include "mods/svc/hook.h"
+#include "mods/svc/stage.h"
 #include "mods/svc/ui.h"
 
-#include "mod_data.hpp"
 #include "echo_menu.hpp"
+#include "mod_data.hpp"
+#include <algorithm>
+#include <format>
 
 // Game includes
 #include "d/actor/d_a_alink.h"
 #include "d/actor/d_a_crod.h"
 #include "d/d_com_inf_game.h"
+#include "d/d_item_data.h"
 #include "d/d_particle.h"
+#include "f_op/f_op_actor_iter.h"
 #include "JSystem/JGeometry.h"
 
 DEFINE_MOD();
 IMPORT_SERVICE(ActorService, svc_actor);
+IMPORT_SERVICE(StageService, svc_stage);
 IMPORT_SERVICE(HookService, svc_hook);
 IMPORT_SERVICE(UiService, svc_ui);
 
@@ -27,6 +30,7 @@ DEFINE_HOOK(&daCrod_c::execute, CopyActor);
 DEFINE_HOOK(&daAlink_c::throwCopyRod, RodAction);
 DEFINE_HOOK(&daAlink_c::procCopyRodSwing, SpawnEchoes);
 DEFINE_HOOK(&daAlink_c::procCopyRodSubject, RemoveEchoes);
+DEFINE_HOOK(&daAlink_c::checkCopyRodTopUse, AllowUseRod);
 
 const u8 MAX_ECHOES = 3;
 s16 copiedActorName = -1;
@@ -42,6 +46,22 @@ u8 flashValue = 0;
 ActorId controlActor = 0;
 s16 controlActorName = -1;
 cXyz controlDistance(0.0f, 0.0f, 0.0f);
+
+void* SearchRodTargets(fopAc_ac_c* actor, void* data) {
+    if (!actor) {
+        return nullptr;
+    }
+
+    daCrod_c* copyRod = (daCrod_c*)data;
+    float xzDist = fopAcM_searchActorDistanceXZ(copyRod, actor);
+    float yDist = fopAcM_searchActorDistanceY(copyRod, actor);
+
+    if (xzDist <= 100.0f && yDist <= 250.0f) {
+        return actor;
+    }
+
+    return nullptr;
+}
 
 void PlaySoundEffect(uint32_t soundID) {
     auto* audioMgr = Z2AudioMgr::getInterface();
@@ -114,11 +134,13 @@ bool SpawnActor() {
                 svc_actor->delete_actor(mod_ctx, activeEchoes.front());
                 activeEchoes.erase(activeEchoes.begin());
             }
+            
+            const EchoObject* echo = FindEcho(copiedActorName);
 
             // Now spawn the new one
             ActorSpawnParams spawnParams = {
-                .parameters = 0,
-                .argument = 0,
+                .parameters = echo->paramaters,
+                .argument = echo->argument,
                 .room_num = fopAcM_GetRoomNo(link),
                 .position = { lineChk.GetCross().x, lineChk.GetCross().y, lineChk.GetCross().z },
                 .angle = { link->current.angle.x, link->current.angle.y, link->current.angle.z },
@@ -151,7 +173,7 @@ void OnRodHit(fopAc_ac_c* hitActor) {
         return;
     }
 
-    if (CheckBindable(hitActor->profile->name)) {
+    if (CheckBindable(hitActor->group)) {
         PlaySoundEffect(Z2SoundID::Z2SE_CSTATUE_S_START);
         daAlink_c* link = daAlink_getAlinkActorClass();
         controlActor = hitActor->id;
@@ -161,28 +183,19 @@ void OnRodHit(fopAc_ac_c* hitActor) {
     }
 }
 
-// Hook into frame loop of the dominion light ball
-// Grab actor that it hits and interrupt with the LearnEcho animation if it is new
+// Hook into frame loop of the dominion rod projectile
+// Grab actor that it hits (now distance detected rather than collision)
+// Then we pass it to OnRodHit to determine the action
 HookAction on_copy_actor_pre(ModContext* ctx, void* args, void*, void*) {
     daAlink_c* link = daAlink_getAlinkActorClass();
     daCrod_c* copyRod = (daCrod_c*)link->getCopyRodActor();
     if (copyRod) {
         if (fopAcM_GetParam(copyRod) != 6) {
             if (!link->checkCopyRodRevive()) {
-                // Instead of changing the AtType, it will be better to search actors by distance
-                // The AtType changes how it interacts with some stuff, but none of them will hit things like chests
-                // I want the player to be able to bind chests, so this will be a better solution
-                // Plus it makes learning echoes not as precise
-                copyRod->mAtCps.SetAtType(AT_TYPE_THROW_OBJ);
-                if (copyRod->mAtCps.ChkAtHit()) {
-                    fopAc_ac_c* hitActor = copyRod->mAtCps.GetAtHitAc();
-                    if (link->checkCopyRodEquip() && hitActor) {
-                        if (copiedActorName == -1) {
-                            OnRodHit(hitActor);
-                        }
-                        if (hitActor->group == 2) { // make it actually damage enemies
-                            hitActor->health -= 2;
-                        }
+                fopAc_ac_c* hitActor = (fopAc_ac_c*)fopAcIt_Judge((fopAcIt_JudgeFunc)SearchRodTargets, copyRod);
+                if (hitActor) {
+                    if (copiedActorName == -1 && controlActor == 0) {
+                        OnRodHit(hitActor);
                     }
                 }
             }
@@ -203,11 +216,14 @@ HookAction on_rod_pre(ModContext* ctx, void* args, void*, void*) {
 
     fopAc_ac_c* cActor = fopAcM_SearchByID(controlActor);
     if (cActor && cActor->profile->name == controlActorName) {
-        PlaySoundEffect(Z2SoundID::Z2SE_CSTATUE_S_STOP);
-        cActor->tevStr.TevKColor.g = 0;
-        controlActor = 0;
-        link->procCopyRodSwingInit();
-        return HOOK_SKIP_ORIGINAL;
+        float currentFrame = link->mUnderFrameCtrl[0].getFrame();
+        if (currentFrame >= 5.0f) {
+            PlaySoundEffect(Z2SoundID::Z2SE_CSTATUE_S_STOP);
+            cActor->tevStr.TevKColor.g = 0;
+            controlActor = 0;
+            link->procCopyRodSwingInit();
+            return HOOK_SKIP_ORIGINAL;
+        }
     }
     return HOOK_CONTINUE;
 }
@@ -239,12 +255,10 @@ HookAction on_sight_pre(ModContext* ctx, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
-void ChangeEchoBehavior(fopAc_ac_c* pActor) {
-    // Yellow tint on echoes
-    // We can edit it on a case by case basis if needed
-    pActor->tevStr.TevKColor.r = 30;
-    pActor->tevStr.TevKColor.g = 30;
-    pActor->tevStr.TevKColor.b = 0;
+// Hook into the func that checks if you can use the rod
+// Force it to always true while this mod is active
+void check_rod_use_replace(ModContext*, void* args, void* retval, void*) {
+    *static_cast<bool*>(retval) = true;
 }
 
 extern "C" {
@@ -253,6 +267,22 @@ extern "C" {
         mods::hook::add_pre<RodAction>(on_rod_pre);
         mods::hook::add_pre<SpawnEchoes>(on_swing_pre);
         mods::hook::add_pre<RemoveEchoes>(on_sight_pre);
+        mods::hook::replace<AllowUseRod>(check_rod_use_replace);
+
+        // Add a chest containing the rod
+        // It is placed outside of Link's house
+        // Seems to automatically delete when the mod is disabled (on map reload)
+        stage_actor_data_class record = {
+            .name = "tboxA1",
+            .base = {
+                .parameters = 0xFF100000,
+                .position = {1534.0f, 811.4f, -3360.0f},
+                .angle = {0, 0, 0x4600},
+                .setID = 0xFFFF
+            }
+        };
+        StageActorHandle handle{};
+        svc_stage->add_actor(mod_ctx, "F_SP103", 1, -1, &record, sizeof(record), &handle);
         return MOD_OK;
     }
 
@@ -296,11 +326,10 @@ extern "C" {
             }
         }
 
-        // once spawned, we want to edit some properties to make the echoes behave properly
+        // apply the yellow echo tint once loaded
         for (auto it = pendingEchoes.begin(); it != pendingEchoes.end(); ) {
             fopAc_ac_c* pActor = fopAcM_SearchByID(*it);
             if (pActor) {
-                ChangeEchoBehavior(pActor);
                 activeEchoes.push_back(*it);
                 while (activeEchoes.size() > MAX_ECHOES) {
                     svc_actor->delete_actor(mod_ctx, activeEchoes.front());
@@ -309,6 +338,9 @@ extern "C" {
                     flashUp = true;
                 }
                 it = pendingEchoes.erase(it);
+                pActor->tevStr.TevKColor.r = 30;
+                pActor->tevStr.TevKColor.g = 30;
+                pActor->tevStr.TevKColor.b = 0;
             }
             else {
                 ++it;
@@ -358,13 +390,14 @@ extern "C" {
             svc_actor->delete_actor(mod_ctx, id);
         }
         activeEchoes.clear();
+        copiedActorName = -1;
 
         // remove any binds
         fopAc_ac_c* cActor = fopAcM_SearchByID(controlActor);
         if (cActor && cActor->profile->name == controlActorName) {
             cActor->tevStr.TevKColor.g = 0;
-            controlActor = 0;
         }
+        controlActor = 0;
 
         return MOD_OK;
     }

@@ -16,6 +16,9 @@ struct EchoObject {
 // I would love to create enemy echoes but that would be a lot of custom actor stuff
 inline const std::vector<EchoObject> EchoDatabase{
 	{ fpcNm_Obj_Stone_e,		"Rock",			0,		0},
+	{ fpcNm_Obj_Carry_e,		"Barrel",		0,		0},
+	//{ fpcNm_Obj_IceLeaf_e,		"Ice Board",	2,		0}
+	//{ fpcNm_Obj_SCannon_e,		"Test",			0,		0 },
 };
 
 inline const EchoObject* FindEcho(s16 profileName) {

@@ -15,9 +15,9 @@
 #include "d/actor/d_a_crod.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_item_data.h"
-#include "d/d_particle.h"
 #include "f_op/f_op_actor_iter.h"
-#include "JSystem/JGeometry.h"
+#include "f_pc/f_pc_name.h"
+#include "d/actor/d_a_obj_iceleaf.h"
 
 DEFINE_MOD();
 IMPORT_SERVICE(ActorService, svc_actor);
@@ -31,9 +31,12 @@ DEFINE_HOOK(&daAlink_c::throwCopyRod, RodAction);
 DEFINE_HOOK(&daAlink_c::procCopyRodSwing, SpawnEchoes);
 DEFINE_HOOK(&daAlink_c::procCopyRodSubject, RemoveEchoes);
 DEFINE_HOOK(&daAlink_c::checkCopyRodTopUse, AllowUseRod);
+DEFINE_HOOK(&daAlink_c::create, ResetBinds);
+DEFINE_HOOK(&daCrod_c::draw, DrawCrod);
+DEFINE_HOOK(&daCrod_c::setReturn, SkipCrodReturn);
 
 const u8 MAX_ECHOES = 3;
-s16 copiedActorName = -1;
+s16 copiedActorName = -1; //EchoDatabase.back().profileName;
 ActorId createdActorId = 0;
 std::vector<ActorId> activeEchoes;
 std::vector<ActorId> pendingEchoes;
@@ -54,10 +57,19 @@ void* SearchRodTargets(fopAc_ac_c* actor, void* data) {
 
     daCrod_c* copyRod = (daCrod_c*)data;
     float xzDist = fopAcM_searchActorDistanceXZ(copyRod, actor);
-    float yDist = fopAcM_searchActorDistanceY(copyRod, actor);
+    float yDist = std::abs(copyRod->current.pos.y - actor->current.pos.y);
 
-    if (xzDist <= 100.0f && yDist <= 250.0f) {
-        return actor;
+    if (xzDist <= 65.0f) {
+        if (actor->group == 2 || actor->group == 4) {
+            if (yDist <= 275.0f) {
+                return actor;
+            }
+        }
+        else {
+            if (yDist <= 175.0f) {
+                return actor;
+            }
+        }
     }
 
     return nullptr;
@@ -71,40 +83,17 @@ void PlaySoundEffect(uint32_t soundID) {
     }
 }
 
-void SpawnVanishSmokeEffect(const cXyz& position, u16 effect) {
-    daAlink_c* link = daAlink_getAlinkActorClass();
-    dPa_control_c* particleControl = g_dComIfG_gameInfo.play.getParticle();
-
-    if (particleControl != nullptr) {
-        cXyz pPos = position;
-        pPos.y += 15.0f;
-        cXyz scale(0.5f, 0.5f, 0.5f);
-        csXyz rotation(0, 0, 0);
-        GXColor altColor = { 0, 30, 0, 255 };
-        GXColor effectColor = { 210, 210, 0, 255 };
-
-        JPABaseEmitter* emitter = particleControl->set(
-            2,
-            effect,
-            &pPos,
-            nullptr,
-            &rotation,
-            &scale,
-            0xff,
-            nullptr,
-            fopAcM_GetRoomNo(link),
-            &effectColor,
-            &altColor,
-            nullptr,
-            1.0f
-        );
-
-        if (emitter) {
-            emitter->setRate(1.0f);
-            emitter->setDirectionalSpeed(-1.0f);
-            emitter->mEmitCount = 50;
-        }
+// Use built in smoke spawn function
+// It's simpler and bakes with the environment
+void SpawnSmokeEffect(const cXyz& position, const csXyz& angle, const dKy_tevstr_c& tevStr, bool vanishing) {
+    u32 smokeParticle1;
+    u32 smokeParticle2;
+    f32 size = 1.5f;
+    if (vanishing) {
+        size = 2.5f;
     }
+    // use !vanishing for the effect so it is type 0 if vanishing, type 1 if spawning
+    fopAcM_effSmokeSet1(&smokeParticle1, &smokeParticle2, &position, &angle, size, &tevStr, !vanishing);
 }
 
 // Spawns the echo
@@ -114,7 +103,7 @@ bool SpawnActor() {
     if (link) {
         // Spawn the echo a set distance in front of link
         float distance = 250.0f;
-        float angleRad = (float)link->current.angle.y * (2.0f * M_PI / 65535.0f);
+        float angleRad = link->current.angle.y * (2.0f * M_PI / UINT16_MAX);
         float offsetX = distance * sinf(angleRad);
         float offsetZ = distance * cosf(angleRad);
 
@@ -129,7 +118,7 @@ bool SpawnActor() {
             while (activeEchoes.size() >= MAX_ECHOES) {
                 fopAc_ac_c* eActor = fopAcM_SearchByID(activeEchoes.front());
                 if (eActor) {
-                    SpawnVanishSmokeEffect(eActor->current.pos, 0x833F);
+                    SpawnSmokeEffect(eActor->current.pos, eActor->current.angle, eActor->tevStr, true);
                 }
                 svc_actor->delete_actor(mod_ctx, activeEchoes.front());
                 activeEchoes.erase(activeEchoes.begin());
@@ -144,7 +133,7 @@ bool SpawnActor() {
                 .room_num = fopAcM_GetRoomNo(link),
                 .position = { lineChk.GetCross().x, lineChk.GetCross().y, lineChk.GetCross().z },
                 .angle = { link->current.angle.x, link->current.angle.y, link->current.angle.z },
-                .scale = { 0.9f, 0.9f, 0.9f }
+                .scale = { 1.0f, 1.0f, 1.0f }
             };
             svc_actor->create_actor(mod_ctx, copiedActorName, &spawnParams, &createdActorId);
             pendingEchoes.push_back(createdActorId);
@@ -152,7 +141,7 @@ bool SpawnActor() {
             return true;
         }
         else {
-            PlaySoundEffect(Z2SoundID::Z2SE_AL_V_ZENTEN_FAIL);
+            PlaySoundEffect(Z2SoundID::Z2SE_SY_ITEM_USE_CANCEL);
             return false;
         }
     }
@@ -164,12 +153,6 @@ void OnRodHit(fopAc_ac_c* hitActor) {
     if (echo) {
         PlaySoundEffect(Z2SoundID::Z2SE_SY_ITEM_SET_B);
         copiedActorName = hitActor->profile->name;
-        UiToastDesc toast = UI_TOAST_DESC_INIT;
-        toast.type = "success";
-        toast.title_rml = "Tri:";
-        toast.body_rml = "<span>You learned a new echo!</span>";
-        toast.duration_ms = 3000;
-        svc_ui->push_toast(mod_ctx, &toast);
         return;
     }
 
@@ -190,6 +173,7 @@ HookAction on_copy_actor_pre(ModContext* ctx, void* args, void*, void*) {
     daAlink_c* link = daAlink_getAlinkActorClass();
     daCrod_c* copyRod = (daCrod_c*)link->getCopyRodActor();
     if (copyRod) {
+        copyRod->speedF = 60.0f;
         if (fopAcM_GetParam(copyRod) != 6) {
             if (!link->checkCopyRodRevive()) {
                 fopAc_ac_c* hitActor = (fopAc_ac_c*)fopAcIt_Judge((fopAcIt_JudgeFunc)SearchRodTargets, copyRod);
@@ -211,6 +195,19 @@ HookAction on_copy_actor_pre(ModContext* ctx, void* args, void*, void*) {
 // If the player has an echo equipped, forcibly enter the swing state
 HookAction on_rod_pre(ModContext* ctx, void* args, void*, void*) {
     daAlink_c* link = daAlink_getAlinkActorClass();
+
+    // Forcing the swing state midair caused momentum to get killed
+    // So we will make the rod act as normal midair
+    // link->getFootOnGround() isnt actually a ground check...
+    // We will do a raycast instead I guess lol
+    cXyz startPos(link->current.pos.x, link->current.pos.y + 1.0f, link->current.pos.z);
+    cXyz endPos(link->current.pos.x, link->current.pos.y - 1.0f, link->current.pos.z);
+    dBgS_ObjLinChk lineChk;
+    lineChk.Set(&startPos, &endPos, link);
+    if (!dComIfG_Bgsp().LineCross(&lineChk)) {
+        return HOOK_CONTINUE;
+    }
+
     if (copiedActorName != -1) {
         link->procCopyRodSwingInit();
         spawningEcho = true;
@@ -219,8 +216,14 @@ HookAction on_rod_pre(ModContext* ctx, void* args, void*, void*) {
 
     fopAc_ac_c* cActor = fopAcM_SearchByID(controlActor);
     if (cActor && cActor->profile->name == controlActorName) {
+        dCamera_c* camera = dCam_getBody();
+        if (camera) {
+            camera->ForceLockOff(cActor);
+        }
         PlaySoundEffect(Z2SoundID::Z2SE_CSTATUE_S_STOP);
         cActor->tevStr.TevKColor.g = 0;
+        cActor->speedF = 0.0f;
+        cActor->speed.set(0.0f, 0.0f, 0.0f);
         controlActor = 0;
         link->procCopyRodSwingInit();
         return HOOK_SKIP_ORIGINAL;
@@ -261,6 +264,55 @@ void check_rod_use_post(ModContext*, void* args, void* retval, void*) {
     *static_cast<bool*>(retval) = true;
 }
 
+// Hook into the func that creates the player link actor
+// We need to delete any active binds
+// Echoes automatically clear
+void create_link_post(ModContext*, void* args, void*, void*) {
+    fopAc_ac_c* cActor = fopAcM_SearchByID(controlActor);
+    if (cActor && cActor->profile->name == controlActorName) {
+        cActor->tevStr.TevKColor.g = 0;
+    }
+    controlActor = 0;
+}
+
+// Only draw the projectile when throwing it
+HookAction crod_draw_pre(ModContext*, void* args, void*, void*) {
+    daAlink_c* link = daAlink_getAlinkActorClass();
+    daCrod_c* copyRod = mods::arg<daCrod_c*>(args, 0);
+    if (!copyRod) {
+        return HOOK_CONTINUE;
+    }
+
+    copyRod->mLight.mColor.r = 0;
+    copyRod->mLight.mColor.g = 0;
+    copyRod->mLight.mColor.b = 0;
+
+    if (link->mProcID == link->PROC_COPY_ROD_REVIVE) {
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    if (copyRod->speedF == 0.0f) {
+        copyRod->mpBallModel->setBaseScale({ 3.0f, 3.0f, 3.0f });
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    return HOOK_CONTINUE;
+}
+
+// Skip over the projectile coming back
+HookAction crod_return_pre(ModContext*, void* args, void*, void*) {
+    daAlink_c* link = daAlink_getAlinkActorClass();
+    daCrod_c* copyRod = mods::arg<daCrod_c*>(args, 0);
+    if (!copyRod) {
+        return HOOK_CONTINUE;
+    }
+
+    link->returnCopyRod();
+    copyRod->speedF = 0.0f;
+    fopAcM_SetParam(copyRod, 0);
+    return HOOK_SKIP_ORIGINAL;
+}
+
 extern "C" {
     MOD_EXPORT ModResult mod_initialize(ModError*) {
         mods::hook::add_pre<CopyActor>(on_copy_actor_pre);
@@ -268,6 +320,9 @@ extern "C" {
         mods::hook::add_pre<SpawnEchoes>(on_swing_pre);
         mods::hook::add_pre<RemoveEchoes>(on_sight_pre);
         mods::hook::add_post<AllowUseRod>(check_rod_use_post);
+        mods::hook::add_post<ResetBinds>(create_link_post);
+        mods::hook::add_pre<DrawCrod>(crod_draw_pre);
+        mods::hook::add_pre<SkipCrodReturn>(crod_return_pre);
 
         // Add a chest containing the rod
         // It is placed outside of Link's house
@@ -290,36 +345,58 @@ extern "C" {
         daAlink_c* link = daAlink_getAlinkActorClass();
         if (link) {
             // Match controlled actors movements with Link
+            // Detect collision as well
             fopAc_ac_c* cActor = fopAcM_SearchByID(controlActor);
             if (cActor && cActor->profile->name == controlActorName) {
-                cActor->current.pos.x = link->current.pos.x + controlDistance.x;
-                cActor->current.pos.y = link->current.pos.y + controlDistance.y;
-                cActor->current.pos.z = link->current.pos.z + controlDistance.z;
+                cActor->speed = link->speed;
+                cActor->speedF = link->speedF;
+                cActor->speed.y = 0.0f;
+
+                cXyz moveDist = link->current.pos - link->old.pos;
+                s16 targetAngle = cM_atan2s(moveDist.x, moveDist.z);
+                cActor->current.angle.y = targetAngle;
+                cActor->shape_angle.y = targetAngle;
+
+                if (fopAcM_wayBgCheck(cActor, 100.0f, 25.0f)) {
+                    cActor->speedF = 0.0f;
+                    cActor->speed.set(0.0f, 0.0f, 0.0f);
+                }
 
                 // Ground check for Y pos
-                cXyz startPos(cActor->current.pos.x, cActor->current.pos.y + 300.0f, cActor->current.pos.z);
-                cXyz endPos(cActor->current.pos.x, cActor->current.pos.y - 300.0f, cActor->current.pos.z);
+                cXyz startPos(cActor->current.pos.x, cActor->current.pos.y + 10.0f, cActor->current.pos.z);
+                cXyz endPos(cActor->current.pos.x, cActor->current.pos.y - 10.0f, cActor->current.pos.z);
                 dBgS_ObjLinChk lineChk;
                 lineChk.Set(&startPos, &endPos, cActor);
                 if (dComIfG_Bgsp().LineCross(&lineChk)) {
                     cActor->current.pos.y = lineChk.GetCross().y;
                 }
+
+                // Lock camera to the controlled actor and block events
+                dCamera_c* camera = dCam_getBody();
+                if (camera) {
+                    camera->ForceLockOn(cActor);
+                    link->eventInfo.setCondition(dEvt_Condition_e::dEvtCnd_NONE_e);
+                }
             }
 
             // Clear echoes when the revive animation has fully played out
+            // Delete the crod actor so shadows don't bug out
+            // We then force unequip the rod so that the actor is created again when pulled out
             if (link->mProcID == daAlink_c::PROC_COPY_ROD_REVIVE) {
+                fopAcM_delete(link->mItemAcKeep.mID);
                 if (link->checkAnmEnd(&link->mUnderFrameCtrl[0])) {
                     link->procWaitInit();
                     for (auto id : activeEchoes) {
                         fopAc_ac_c* eActor = fopAcM_SearchByID(id);
                         if (eActor) {
-                            SpawnVanishSmokeEffect(eActor->current.pos, 0x833F);
+                            SpawnSmokeEffect(eActor->current.pos, eActor->current.angle, eActor->tevStr, true);
                         }
                         svc_actor->delete_actor(mod_ctx, id);
                     }
                     PlaySoundEffect(Z2SoundID::Z2SE_MAGIC_METER_FINISH);
                     activeEchoes.clear();
                     copiedActorName = -1;
+                    link->allUnequip(0);
                 }
             }
         }
@@ -336,9 +413,10 @@ extern "C" {
                     flashUp = true;
                 }
                 it = pendingEchoes.erase(it);
-                pActor->tevStr.TevKColor.r = 30;
-                pActor->tevStr.TevKColor.g = 30;
+                pActor->tevStr.TevKColor.r = 25;
+                pActor->tevStr.TevKColor.g = 25;
                 pActor->tevStr.TevKColor.b = 0;
+                SpawnSmokeEffect(pActor->current.pos, pActor->current.angle, pActor->tevStr, false);
             }
             else {
                 ++it;
@@ -362,8 +440,8 @@ extern "C" {
         // if there are 3 active echoes, make the oldest one flash whiteish
         if (activeEchoes.size() >= MAX_ECHOES) {
             if (flashUp) {
-                flashValue += 3;
-                if (flashValue >= 45) {
+                flashValue += 2;
+                if (flashValue >= 30) {
                     flashUp = false;
                 }
             }
